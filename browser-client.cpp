@@ -26,6 +26,10 @@
 #include <QApplication>
 #include <QThread>
 #include <QToolTip>
+#if defined(_WIN32) && CHROME_VERSION_BUILD >= 6367
+#include <d3d11.h>
+#include "browser-shared-texture.hpp"
+#endif
 #if defined(__APPLE__) && CHROME_VERSION_BUILD > 4430
 #include <IOSurface/IOSurface.h>
 #endif
@@ -423,6 +427,20 @@ void BrowserClient::OnAcceleratedPaint(CefRefPtr<CefBrowser>, PaintElementType t
 
 	obs_enter_graphics();
 
+#if defined(_WIN32) && CHROME_VERSION_BUILD >= 6367
+	/* CEF may reuse this resource as soon as the paint callback returns. */
+	gs_texture_t *shared = gs_texture_open_nt_shared((uint32_t)(uintptr_t)info.shared_texture_handle);
+	if (shared) {
+		auto *native = static_cast<ID3D11Texture2D *>(gs_texture_get_obj(shared));
+		if (native) {
+			D3D11_TEXTURE2D_DESC desc;
+			native->GetDesc(&desc);
+			CopyBrowserSharedTexture(bs->texture, shared,
+						 (desc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX) != 0);
+		}
+		gs_texture_destroy(shared);
+	}
+#else
 	if (bs->texture) {
 #ifdef _WIN32
 		//gs_texture_release_sync(bs->texture, 0);
@@ -452,14 +470,13 @@ void BrowserClient::OnAcceleratedPaint(CefRefPtr<CefBrowser>, PaintElementType t
 						    format.drm_format, format.gs_format, info.plane_count, fds, strides,
 						    offsets, modifier != DRM_FORMAT_MOD_INVALID ? modifiers : NULL);
 #endif
+#endif
 	UpdateExtraTexture();
 	obs_leave_graphics();
 
 #if defined(__APPLE__) && CHROME_VERSION_BUILD >= 6367
 	bs->last_handle = info.shared_texture_io_surface;
-#elif defined(_WIN32) && CHROME_VERSION_BUILD >= 6367
-	bs->last_handle = info.shared_texture_handle;
-#elif defined(__APPLE__) || defined(_WIN32)
+#elif defined(__APPLE__) || (defined(_WIN32) && CHROME_VERSION_BUILD < 6367)
 	bs->last_handle = shared_handle;
 #endif
 }
